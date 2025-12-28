@@ -1,0 +1,119 @@
+name: Build and Release Windows Executable
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for the release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Build executable with PyInstaller
+        run: |
+          pyinstaller tts_chatterbox.spec
+
+      - name: Create release archive
+        run: |
+          Compress-Archive -Path dist/tts_chatterbox/* -DestinationPath tts_chatterbox_windows.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts_chatterbox_windows
+          path: tts_chatterbox_windows.zip
+          retention-days: 30
+
+      - name: Get version from tag or input
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tts_chatterbox_windows.zip
+          name: Text-to-Speech with Chatterbox v${{ steps.version.outputs.version }}
+          body: |
+            ## Text-to-Speech with Chatterbox v${{ steps.version.outputs.version }}
+
+            ### Download
+
+            Download `tts_chatterbox_windows.zip`, extract it, and run `tts_chatterbox.exe`.
+
+            **No Python installation required!**
+
+            ### Features
+
+            - Convert PDF, DOC, DOCX, TXT, and Markdown files to speech
+            - Three Chatterbox TTS models: Turbo, Standard, and Multilingual
+            - Voice cloning with reference audio
+            - GPU acceleration with CUDA support
+
+            ### Requirements
+
+            - Windows 10 or later
+            - NVIDIA GPU with CUDA (recommended) or CPU
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release (workflow dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          files: tts_chatterbox_windows.zip
+          name: Text-to-Speech with Chatterbox v${{ inputs.version }}
+          body: |
+            ## Text-to-Speech with Chatterbox v${{ inputs.version }}
+
+            ### Download
+
+            Download `tts_chatterbox_windows.zip`, extract it, and run `tts_chatterbox.exe`.
+
+            **No Python installation required!**
+
+            ### Features
+
+            - Convert PDF, DOC, DOCX, TXT, and Markdown files to speech
+            - Three Chatterbox TTS models: Turbo, Standard, and Multilingual
+            - Voice cloning with reference audio
+            - GPU acceleration with CUDA support
+
+            ### Requirements
+
+            - Windows 10 or later
+            - NVIDIA GPU with CUDA (recommended) or CPU
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
