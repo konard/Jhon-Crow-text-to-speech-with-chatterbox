@@ -113,19 +113,25 @@ class TestChatterboxEngine:
         assert len(sentences) == 3
         assert "First sentence." in sentences[0]
 
-    @patch('tts_app.tts.chatterbox.ChatterboxTurboTTS')
-    @patch('torch.cuda.is_available')
-    def test_initialize_turbo_model(self, mock_cuda, mock_tts_class):
-        """Test initializing the turbo model."""
-        mock_cuda.return_value = False  # Use CPU
-        mock_model = MagicMock()
-        mock_tts_class.from_pretrained.return_value = mock_model
+    def test_config_stored_after_init_attempt(self):
+        """Test that config is stored even if initialization fails.
 
+        Note: Full initialization tests require the chatterbox-tts library
+        to be installed with GPU support. This test verifies the engine
+        stores the config properly.
+        """
         engine = ChatterboxEngine()
         config = TTSConfig(model_type="turbo", device="cpu")
 
-        # This would fail without the actual library, so we just check the mock setup
-        # In real tests with the library installed, this would work
+        # The engine should store config even if init fails (no chatterbox installed)
+        try:
+            engine.initialize(config)
+        except (RuntimeError, ImportError, ModuleNotFoundError):
+            # Expected when chatterbox-tts is not installed
+            pass
+
+        # Config should still be stored
+        assert engine._config == config
 
 
 class TestChatterboxEngineMultilingual:
