@@ -18,6 +18,128 @@ from tts_app.tts import ChatterboxEngine, TTSConfig
 logger = logging.getLogger(__name__)
 
 
+class SuccessDialog(ctk.CTkToplevel):
+    """Custom success dialog with Open File Location button.
+
+    This dialog displays a success message and provides buttons to open
+    the file location in the file explorer.
+    """
+
+    def __init__(self, parent, title: str, message: str, file_path: Path):
+        """Initialize the success dialog.
+
+        Args:
+            parent: Parent window.
+            title: Dialog title.
+            message: Success message.
+            file_path: Path to the generated file.
+        """
+        super().__init__(parent)
+
+        self._file_path = file_path
+
+        self.title(title)
+        self.geometry("450x200")
+        self.minsize(400, 180)
+        self.transient(parent)
+        self.grab_set()
+
+        # Main frame with padding
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Success icon and title
+        title_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        title_frame.pack(fill="x", pady=(0, 10))
+
+        success_label = ctk.CTkLabel(
+            title_frame,
+            text="Success",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#55AA55"
+        )
+        success_label.pack(side="left")
+
+        # Message
+        message_label = ctk.CTkLabel(
+            main_frame,
+            text=message,
+            font=ctk.CTkFont(size=12),
+            justify="left"
+        )
+        message_label.pack(fill="x", pady=(0, 15))
+
+        # Button frame
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.pack(fill="x")
+
+        # Open File Location button
+        open_location_btn = ctk.CTkButton(
+            button_frame,
+            text="Open File Location",
+            command=self._open_file_location,
+            width=140
+        )
+        open_location_btn.pack(side="left", padx=(0, 10))
+
+        # OK button
+        ok_btn = ctk.CTkButton(
+            button_frame,
+            text="OK",
+            command=self.destroy,
+            width=80
+        )
+        ok_btn.pack(side="right")
+
+        # Center the dialog on parent
+        self.update_idletasks()
+        self._center_on_parent(parent)
+
+    def _center_on_parent(self, parent):
+        """Center this dialog on the parent window."""
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_w = parent.winfo_width()
+        parent_h = parent.winfo_height()
+
+        dialog_w = self.winfo_width()
+        dialog_h = self.winfo_height()
+
+        x = parent_x + (parent_w - dialog_w) // 2
+        y = parent_y + (parent_h - dialog_h) // 2
+
+        self.geometry(f"+{x}+{y}")
+
+    def _open_file_location(self):
+        """Open the file's directory in the system file explorer."""
+        import platform
+        import subprocess
+
+        folder_path = self._file_path.parent
+
+        try:
+            system = platform.system()
+            if system == "Windows":
+                # On Windows, use explorer with /select to highlight the file
+                subprocess.run(["explorer", "/select,", str(self._file_path)])
+            elif system == "Darwin":
+                # On macOS, use open command with -R to reveal the file
+                subprocess.run(["open", "-R", str(self._file_path)])
+            else:
+                # On Linux, use xdg-open to open the folder
+                subprocess.run(["xdg-open", str(folder_path)])
+        except Exception as e:
+            logger.warning(f"Failed to open file location: {e}")
+            # Fall back to showing a message
+            CTkMessagebox(
+                master=self,
+                title="Info",
+                message=f"File is located at:\n{folder_path}",
+                icon="info",
+                width=400
+            )
+
+
 class ErrorDialog(ctk.CTkToplevel):
     """Custom error dialog with copy button for error message.
 
@@ -158,6 +280,7 @@ class TTSApplication(ctk.CTk):
         self._pipeline: PreprocessorPipeline = create_default_pipeline()
         self._tts_engine: Optional[ChatterboxEngine] = None
         self._processing = False
+        self._cancel_requested = False  # Flag to signal cancellation
         self._progress_animation_id = None  # Track progress bar animation
 
         # Variables
@@ -364,15 +487,32 @@ class TTSApplication(ctk.CTk):
         self._progress_bar.pack(fill="x", pady=(5, 0))
         self._progress_bar.set(0)
 
+        # Button frame for convert and cancel buttons
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.pack(fill="x", pady=(20, 0))
+
         # Convert button
         self._convert_btn = ctk.CTkButton(
-            main_frame,
+            button_frame,
             text="Convert to Speech",
             command=self._start_conversion,
             height=50,
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        self._convert_btn.pack(fill="x", pady=(20, 0))
+        self._convert_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        # Cancel button (hidden by default)
+        self._cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=self._cancel_conversion,
+            height=50,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color="#CC4444",
+            hover_color="#AA3333"
+        )
+        self._cancel_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
+        self._cancel_btn.pack_forget()  # Hidden by default
 
         # Status bar
         self._status_label = ctk.CTkLabel(
@@ -510,12 +650,22 @@ class TTSApplication(ctk.CTk):
 
         # Start conversion in background thread
         self._processing = True
+        self._cancel_requested = False
         self._convert_btn.configure(state="disabled", text="Converting...")
+        self._cancel_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))  # Show cancel button
         self._progress_bar.set(0)
 
         thread = threading.Thread(target=self._run_conversion)
         thread.daemon = True
         thread.start()
+
+    def _cancel_conversion(self):
+        """Request cancellation of the ongoing conversion."""
+        if self._processing and not self._cancel_requested:
+            self._cancel_requested = True
+            self._cancel_btn.configure(state="disabled", text="Cancelling...")
+            self._update_progress(0, "Cancelling... (saving generated audio)")
+            logger.info("Cancellation requested by user")
 
     def _run_conversion(self):
         """Run the conversion process (in background thread)."""
@@ -575,21 +725,39 @@ class TTSApplication(ctk.CTk):
                 progress = 0.35 + (0.60 * current / total)
                 self._update_progress(progress, f"Synthesizing: {status}")
 
+            def cancel_check():
+                return self._cancel_requested
+
             result = self._tts_engine.synthesize(
                 processed_text,
                 output_path,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                cancel_check=cancel_check
             )
 
-            # Complete
-            self._update_progress(1.0, "Complete!")
+            # Handle result (complete or cancelled with partial)
             duration_str = f"{int(result.duration_seconds // 60)}:{int(result.duration_seconds % 60):02d}"
 
-            self.after(0, lambda: CTkMessagebox(
-                title="Success",
-                message=f"Audio saved to:\n{output_path}\n\nDuration: {duration_str}",
-                icon="check"
-            ))
+            if result.was_cancelled:
+                # Partial result from cancellation
+                self._update_progress(1.0, f"Cancelled - partial audio saved ({result.chunks_completed}/{result.chunks_total} chunks)")
+                self.after(0, lambda: SuccessDialog(
+                    self,
+                    title="Conversion Cancelled",
+                    message=f"Partial audio saved to:\n{output_path}\n\n"
+                            f"Duration: {duration_str}\n"
+                            f"Progress: {result.chunks_completed}/{result.chunks_total} chunks",
+                    file_path=output_path
+                ))
+            else:
+                # Complete
+                self._update_progress(1.0, "Complete!")
+                self.after(0, lambda: SuccessDialog(
+                    self,
+                    title="Conversion Complete",
+                    message=f"Audio saved to:\n{output_path}\n\nDuration: {duration_str}",
+                    file_path=output_path
+                ))
 
         except Exception as e:
             logger.exception("Conversion failed")
@@ -627,6 +795,9 @@ class TTSApplication(ctk.CTk):
     def _reset_ui(self):
         """Reset UI after conversion."""
         self._convert_btn.configure(state="normal", text="Convert to Speech")
+        self._cancel_btn.pack_forget()  # Hide cancel button
+        self._cancel_btn.configure(state="normal", text="Cancel")  # Reset cancel button
+        self._cancel_requested = False
         self._progress_label.configure(text="Ready")
 
 
