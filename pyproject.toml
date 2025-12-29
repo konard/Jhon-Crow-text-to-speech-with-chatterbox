@@ -43,6 +43,11 @@ dev = [
     "pytest-cov>=4.0.0",
     "pyinstaller>=6.0.0",
 ]
+# Optional dependencies for better language support in multilingual model
+multilingual = [
+    "russian-text-stresser @ git+https://github.com/Vuizur/add-stress-to-epub",  # For Russian stress marking
+    "pkuseg",  # For Chinese segmentation
+]
 
 [project.scripts]
 tts-chatterbox = "tts_app.main:main"

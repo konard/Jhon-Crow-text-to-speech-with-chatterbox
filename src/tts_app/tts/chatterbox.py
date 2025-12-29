@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from .base import TTSEngine, TTSConfig, TTSResult, ProgressCallback
+from .base import TTSEngine, TTSConfig, TTSResult, ProgressCallback, CancelCheck
 
 logger = logging.getLogger(__name__)
 
@@ -86,25 +86,27 @@ class ChatterboxEngine(TTSEngine):
         """Detect the best available device for inference.
 
         Checks for GPU availability in the following order:
-        1. NVIDIA CUDA
-        2. AMD ROCm (via HIP backend in PyTorch)
-        3. CPU fallback
+        1. NVIDIA CUDA (requires CUDA-enabled PyTorch build)
+        2. AMD ROCm (via HIP backend in PyTorch - requires ROCm PyTorch build)
+        3. Apple MPS (Apple Silicon)
+        4. CPU fallback
 
         Returns:
-            Device string ("cuda", "hip", or "cpu").
+            Device string ("cuda", "mps", or "cpu").
         """
         import torch
 
         # Check for NVIDIA CUDA
+        # Note: torch.cuda.is_available() can return False for AMD GPUs on Windows
+        # because standard PyTorch Windows builds only support NVIDIA CUDA
         if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            logger.info(f"CUDA available: {device_name}")
-            return "cuda"
-
-        # Check for AMD ROCm (exposed as HIP backend in PyTorch)
-        # ROCm devices appear as CUDA devices when PyTorch is built with ROCm support
-        # On ROCm builds, torch.cuda.is_available() returns True for AMD GPUs
-        # If we got here, CUDA is not available, so check for other backends
+            try:
+                device_name = torch.cuda.get_device_name(0)
+                logger.info(f"CUDA available: {device_name}")
+                return "cuda"
+            except Exception as e:
+                logger.warning(f"CUDA detected but failed to get device info: {e}")
+                # Fall through to CPU
 
         # Check for MPS (Apple Silicon)
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
@@ -113,6 +115,43 @@ class ChatterboxEngine(TTSEngine):
 
         logger.info("No GPU available, using CPU")
         return "cpu"
+
+    def _validate_device(self, requested_device: str) -> str:
+        """Validate the requested device and return a valid device.
+
+        If the requested device is not available, falls back to CPU with a warning.
+
+        Args:
+            requested_device: The device requested by the user ("cuda", "cpu", "mps", "auto").
+
+        Returns:
+            A valid device string that PyTorch can use.
+        """
+        import torch
+
+        if requested_device == "auto":
+            return self._detect_best_device()
+
+        if requested_device == "cuda":
+            if not torch.cuda.is_available():
+                logger.warning(
+                    "GPU (CUDA) was requested but is not available. "
+                    "This can happen if:\n"
+                    "  - You have an AMD GPU (standard PyTorch only supports NVIDIA CUDA)\n"
+                    "  - PyTorch was not installed with CUDA support\n"
+                    "  - CUDA drivers are not properly installed\n"
+                    "Falling back to CPU mode."
+                )
+                return "cpu"
+            return "cuda"
+
+        if requested_device == "mps":
+            if not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+                logger.warning("MPS was requested but is not available. Falling back to CPU.")
+                return "cpu"
+            return "mps"
+
+        return requested_device  # "cpu" or unknown
 
     def initialize(self, config: TTSConfig) -> None:
         """Initialize the Chatterbox TTS model.
@@ -127,10 +166,8 @@ class ChatterboxEngine(TTSEngine):
         """
         self._config = config
 
-        # Determine device
-        device = config.device
-        if device == "auto":
-            device = self._detect_best_device()
+        # Validate and determine device (with fallback to CPU if GPU not available)
+        device = self._validate_device(config.device)
 
         logger.info(f"Initializing Chatterbox {config.model_type} on {device}")
 
@@ -174,14 +211,18 @@ class ChatterboxEngine(TTSEngine):
                     "Get your token at: https://huggingface.co/settings/tokens"
                 ) from e
 
-            # Check for CUDA loading errors on CPU machines
-            if "torch.cuda.is_available() is False" in error_msg or "CUDA device" in error_msg:
+            # Check for CUDA loading errors on CPU machines or AMD GPU users
+            if ("torch.cuda.is_available() is False" in error_msg or
+                "CUDA device" in error_msg or
+                "Torch not compiled with CUDA enabled" in error_msg):
                 raise CUDANotAvailableError(
-                    "The model was saved for CUDA but your machine doesn't have CUDA available.\n\n"
-                    "This error should have been handled automatically. Please try:\n"
-                    "1. Use the 'Turbo' or 'Standard' model instead\n"
-                    "2. Report this issue if it persists\n\n"
-                    "Technical details: The model needs to be loaded with map_location='cpu'"
+                    "GPU acceleration is not available on this system.\n\n"
+                    "Possible reasons:\n"
+                    "- You have an AMD GPU (PyTorch Windows builds only support NVIDIA CUDA)\n"
+                    "- PyTorch was installed without CUDA support\n"
+                    "- NVIDIA drivers are not installed\n\n"
+                    "Solution: Select 'Auto (GPU/CPU)' or 'CPU' in Device options.\n"
+                    "The application will work on CPU, though slower."
                 ) from e
 
             raise RuntimeError(f"Failed to initialize TTS model: {e}") from e
@@ -200,7 +241,8 @@ class ChatterboxEngine(TTSEngine):
         self,
         text: str,
         output_path: Path,
-        progress_callback: Optional[ProgressCallback] = None
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None
     ) -> TTSResult:
         """Synthesize speech from text.
 
@@ -208,6 +250,8 @@ class ChatterboxEngine(TTSEngine):
             text: The text to convert to speech.
             output_path: Path where the audio file should be saved.
             progress_callback: Optional callback for progress updates.
+            cancel_check: Optional callback that returns True if generation should stop.
+                         When cancelled, partial audio is saved and result.was_cancelled is True.
 
         Returns:
             TTSResult with information about the generated audio.
@@ -229,8 +273,16 @@ class ChatterboxEngine(TTSEngine):
 
         audio_segments = []
         sample_rate = self._model.sr
+        was_cancelled = False
+        chunks_completed = 0
 
         for i, chunk in enumerate(chunks):
+            # Check for cancellation before processing each chunk
+            if cancel_check and cancel_check():
+                logger.info(f"Generation cancelled at chunk {i + 1}/{total_chunks}")
+                was_cancelled = True
+                break
+
             if progress_callback:
                 progress_callback(i + 1, total_chunks, f"Processing chunk {i + 1}/{total_chunks}")
 
@@ -241,13 +293,17 @@ class ChatterboxEngine(TTSEngine):
                 # Generate audio for this chunk
                 wav = self._generate_chunk(chunk)
                 audio_segments.append(wav)
+                chunks_completed += 1
 
             except Exception as e:
                 logger.warning(f"Failed to synthesize chunk {i + 1}: {e}")
                 # Continue with other chunks
                 continue
 
+        # Handle case where no audio was generated
         if not audio_segments:
+            if was_cancelled:
+                raise RuntimeError("Generation was cancelled before any audio was generated")
             raise RuntimeError("No audio was generated")
 
         # Concatenate all audio segments
@@ -273,13 +329,19 @@ class ChatterboxEngine(TTSEngine):
         duration = final_audio.shape[1] / sample_rate
 
         if progress_callback:
-            progress_callback(total_chunks, total_chunks, "Complete")
+            if was_cancelled:
+                progress_callback(chunks_completed, total_chunks, f"Cancelled - saved {chunks_completed}/{total_chunks} chunks")
+            else:
+                progress_callback(total_chunks, total_chunks, "Complete")
 
         return TTSResult(
             audio_path=output_path,
             duration_seconds=duration,
             sample_rate=sample_rate,
-            text_processed=text
+            text_processed=text,
+            was_cancelled=was_cancelled,
+            chunks_completed=chunks_completed,
+            chunks_total=total_chunks
         )
 
     def _generate_chunk(self, text: str):

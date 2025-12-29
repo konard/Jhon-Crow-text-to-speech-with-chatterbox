@@ -35,14 +35,21 @@ class TTSResult:
         duration_seconds: Duration of the audio in seconds.
         sample_rate: Sample rate of the audio.
         text_processed: The text that was converted to speech.
+        was_cancelled: True if generation was cancelled (partial result).
+        chunks_completed: Number of chunks that were successfully generated.
+        chunks_total: Total number of chunks that were planned.
     """
     audio_path: Path
     duration_seconds: float
     sample_rate: int
     text_processed: str
+    was_cancelled: bool = False
+    chunks_completed: int = 0
+    chunks_total: int = 0
 
 
 ProgressCallback = Callable[[int, int, str], None]  # (current, total, status)
+CancelCheck = Callable[[], bool]  # Returns True if generation should be cancelled
 
 
 class TTSEngine(ABC):
@@ -66,7 +73,8 @@ class TTSEngine(ABC):
         self,
         text: str,
         output_path: Path,
-        progress_callback: Optional[ProgressCallback] = None
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None
     ) -> TTSResult:
         """Synthesize speech from text.
 
@@ -74,6 +82,8 @@ class TTSEngine(ABC):
             text: The text to convert to speech.
             output_path: Path where the audio file should be saved.
             progress_callback: Optional callback for progress updates.
+            cancel_check: Optional callback that returns True if generation should stop.
+                         When cancelled, partial audio is saved and result.was_cancelled is True.
 
         Returns:
             TTSResult with information about the generated audio.

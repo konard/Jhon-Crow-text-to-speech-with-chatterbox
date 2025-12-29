@@ -13,7 +13,7 @@ A desktop application that converts documents (PDF, DOC, DOCX, TXT, MD) to speec
 - **Smart text preprocessing**:
   - Automatic page number removal
   - Optional footnote handling (ignore or read inline)
-- **GPU acceleration**: CUDA support for faster generation
+- **GPU acceleration**: NVIDIA CUDA support for faster generation (falls back to CPU for AMD GPUs)
 - **Extensible architecture**: Easy to add new file formats or TTS engines
 
 ## Installation
@@ -30,6 +30,7 @@ A desktop application that converts documents (PDF, DOC, DOCX, TXT, MD) to speec
 **Requirements for the executable:**
 - Windows 10 or later
 - NVIDIA GPU with CUDA (recommended) or CPU
+- Note: AMD GPUs are not supported for GPU acceleration; the app will automatically use CPU mode
 
 ### Install from Source (for developers)
 
@@ -47,6 +48,9 @@ pip install -e .
 
 # Or install with development dependencies
 pip install -e .[dev]
+
+# For better multilingual support (Russian stress marking, Chinese segmentation):
+pip install -e .[multilingual]
 ```
 
 ### Build Windows Executable (for developers)
@@ -194,6 +198,20 @@ pipeline.add(MyPreprocessor())
 ## Supported Languages (Multilingual Model)
 
 Arabic (ar), Danish (da), German (de), Greek (el), English (en), Spanish (es), Finnish (fi), French (fr), Hebrew (he), Hindi (hi), Italian (it), Japanese (ja), Korean (ko), Malay (ms), Dutch (nl), Norwegian (no), Polish (pl), Portuguese (pt), Russian (ru), Swedish (sv), Swahili (sw), Turkish (tr), Chinese (zh)
+
+### Improving Language Quality
+
+For best quality with Russian and Chinese languages, install the optional multilingual dependencies:
+
+```bash
+pip install -e .[multilingual]
+```
+
+This installs:
+- `russian-text-stresser`: Proper Russian stress marking for natural pronunciation
+- `pkuseg`: Chinese word segmentation for better Chinese synthesis
+
+Without these packages, the app will still work but may have reduced pronunciation quality for these languages.
 
 ## Development
 
